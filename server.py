@@ -2,6 +2,7 @@ from flask import Flask, request, Response
 from io import BytesIO
 import torch
 from av import open as avopen
+import sys
 
 import commons
 import utils
@@ -15,6 +16,11 @@ from scipy.io import wavfile
 app = Flask(__name__)
 app.config["JSON_AS_ASCII"] = False
 
+if sys.platform == "darwin" and torch.backends.mps.is_available():
+    device = "mps"
+    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+else:
+    device = "cuda"
 
 def get_text(text, language_str, hps):
     norm_text, phone, tone, word2ph = clean_text(text, language_str)
@@ -27,7 +33,7 @@ def get_text(text, language_str, hps):
         for i in range(len(word2ph)):
             word2ph[i] = word2ph[i] * 2
         word2ph[0] += 1
-    bert = get_bert(norm_text, word2ph, language_str)
+    bert = get_bert(norm_text, word2ph, language_str, device)
     del word2ph
     assert bert.shape[-1] == len(phone), phone
 
@@ -119,19 +125,25 @@ net_g = SynthesizerTrn(
 ).to(dev)
 _ = net_g.eval()
 
-_ = utils.load_checkpoint("logs/G_649000.pth", net_g, None, skip_optimizer=True)
+_ = utils.load_checkpoint("logs/genshin/G_3000.pth", net_g, None, skip_optimizer=True)
 
+# 机选一个发音
+import random
+def get_random_speaker():
+    spk_list = list(hps.data.spk2id.keys())
+    return spk_list[random.randint(0, len(spk_list) - 1)]
 
 @app.route("/")
 def main():
     try:
-        speaker = request.args.get("speaker")
+        speaker = request.args.get("speaker", get_random_speaker())
+        print(speaker)
         text = request.args.get("text").replace("/n", "")
-        sdp_ratio = float(request.args.get("sdp_ratio", 0.2))
+        sdp_ratio = float(request.args.get("sdp_ratio", 0.4))
         noise = float(request.args.get("noise", 0.5))
-        noisew = float(request.args.get("noisew", 0.6))
-        length = float(request.args.get("length", 1.2))
-        language = request.args.get("language")
+        noisew = float(request.args.get("noisew", 0.8))
+        length = float(request.args.get("length", 1))
+        language = request.args.get("language", 'ZH')
         if length >= 2:
             return "Too big length"
         if len(text) >= 250:
@@ -168,3 +180,6 @@ def main():
             return Response(
                 ofp.getvalue(), mimetype="audio/mpeg" if fmt == "mp3" else "audio/ogg"
             )
+
+if __name__ == '__main__':
+    app.run(debug=True, host="0.0.0.0", port=5000)
